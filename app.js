@@ -229,28 +229,15 @@
     // Outward from dry-side crest = further +n
     const dsToe = offsetSegment(leftmost, rightmost, n, +(half + dsRun));
 
+    // CAD layers = material shells. Outer envelope lines share one layer.
     const groups = [];
-
-    groups.push(
-      makeGroup("Crest", 4, [
-        makePoly("Crest upstream edge (lake)", zCrest, crestUS, false),
-        makePoly("Crest downstream edge (dry)", zCrest, crestDS, false),
-      ])
-    );
-
-    groups.push(
-      makeGroup("Upstream", 0, [
-        makePoly("US crest edge (aguas arriba)", zCrest, crestUS, false),
-        makePoly("US toe", usZToe, usToe, false),
-      ])
-    );
-
-    groups.push(
-      makeGroup("Downstream", 2, [
-        makePoly("DS crest edge (aguas abajo)", zCrest, crestDS, false),
-        makePoly("DS toe", dsZToe, dsToe, false),
-      ])
-    );
+    const outerPolys = [
+      makePoly("Crest US edge (lake)", zCrest, crestUS, false),
+      makePoly("Crest DS edge (dry)", zCrest, crestDS, false),
+      makePoly("US toe", usZToe, usToe, false),
+      makePoly("DS toe", dsZToe, dsToe, false),
+    ];
+    groups.push(makeGroup("outer shell", 0, outerPolys));
 
     let coreNote = "";
     if (p.coreEnable) {
@@ -263,12 +250,11 @@
           throw new Error("Core H:V invalid.");
         }
         if (!isFinite(cZ)) throw new Error("Core base elevation invalid.");
-        // Half-width at crest from vertical drop and core slope
         coreHalf = planOffsetDistance(zCrest, cZ, cH / cV);
         const coreUS = offsetSegment(leftmost, rightmost, n, -coreHalf);
         const coreDS = offsetSegment(leftmost, rightmost, n, +coreHalf);
         groups.push(
-          makeGroup("Core", 1, [
+          makeGroup("core", 1, [
             makePoly("Core crest US (lake)", zCrest, coreUS, false),
             makePoly("Core crest DS (dry)", zCrest, coreDS, false),
             makePoly("Core axis (base ref)", cZ, [leftmost, rightmost], false),
@@ -283,7 +269,7 @@
         const coreUS = offsetSegment(leftmost, rightmost, n, -coreHalf);
         const coreDS = offsetSegment(leftmost, rightmost, n, +coreHalf);
         groups.push(
-          makeGroup("Core", 1, [
+          makeGroup("core", 1, [
             makePoly("Core crest US (lake)", zCrest, coreUS, false),
             makePoly("Core crest DS (dry)", zCrest, coreDS, false),
           ])
@@ -552,7 +538,7 @@
     const ul = $("#groupList");
     ul.innerHTML = "";
     if (!project.groups.length) {
-      ul.innerHTML = '<li class="empty">No groups yet. Use Quick Mode or Add.</li>';
+      ul.innerHTML = '<li class="empty">No shells yet. Use Quick Mode or Add.</li>';
       return;
     }
     project.groups.forEach((g, idx) => {
@@ -575,7 +561,7 @@
         if (act === "down") { e.stopPropagation(); moveGroup(idx, 1); return; }
         if (act === "rename") {
           e.stopPropagation();
-          const n = prompt("Group / layer name:", g.name);
+          const n = prompt("Shell / CAD layer name:", g.name);
           if (n != null && n.trim()) { g.name = n.trim(); renderAll(); }
           return;
         }
@@ -851,7 +837,7 @@
 
   // ---------- Actions ----------
   function addGroup() {
-    const n = prompt("New group / layer name:", "New group");
+    const n = prompt("New shell / CAD layer name:", "filter");
     if (n == null || !n.trim()) return;
     const g = makeGroup(n.trim(), project.groups.length, []);
     project.groups.push(g);

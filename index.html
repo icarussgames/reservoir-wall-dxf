@@ -31,7 +31,7 @@
 
     <aside class="sidebar">
       <div class="panel-title">
-        Groups (DXF layers)
+        Shells (CAD layers = materials)
         <button class="btn btn-sm" id="btnAddGroup" type="button">+ Add</button>
       </div>
       <ul class="list" id="groupList"></ul>
@@ -48,7 +48,7 @@
             <input type="checkbox" id="showElevLabels" checked /> Elevation labels
           </label>
           <label class="field inline" style="flex:0">
-            <input type="checkbox" id="showAllGroups" checked /> All groups
+            <input type="checkbox" id="showAllGroups" checked /> All shells
           </label>
           <label class="field inline" style="flex:0">
             <input type="checkbox" id="showAxis" checked /> Axis
@@ -170,7 +170,7 @@
           <div class="section-label">Core distribution (optional)</div>
           <label class="field inline">
             <input type="checkbox" id="qmCoreEnable" />
-            Generate core borders about the same axis
+            Generate core as its own CAD layer (separate material shell)
           </label>
           <div id="qmCoreFields" style="display:none">
             <label class="field">
