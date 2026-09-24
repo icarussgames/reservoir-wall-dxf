@@ -1,19 +1,17 @@
 /**
- * Reservoir Wall DXF — Civil 3D helper
- * Domain: Project → Groups (layers) → Polylines (LWPOLYLINE @ constant elevation 38)
+ * Reservoir Wall DXF — Civil 3D Helper
  *
  * Quick Mode axis geometry (exact for 2-point segment):
  *   Looking from upstream (middle of lake): leftmost / rightmost UTM points.
- *   Axis direction = leftmost → rightmost
- *   d = normalize(rightmost - leftmost)
- *   n = (-d.y, d.x)                     // CCW left when walking leftmost→rightmost
- *   Upstream crest border   = axis + n*(W/2)   // lake / left side
- *   Downstream crest border = axis - n*(W/2)   // dry / right side
- *   US toe = further +n from US crest border by |ΔZ|*(H/V)
- *   DS toe = further -n from DS crest border by |ΔZ|*(H/V)
- *
- * Advanced inclination helper (multi-vertex MVP):
- *   plan_offset = |Z_target - Z_ref| * (H/V); per-vertex local-tangent perp.
+ *   Axis direction d = normalize(rightmost - leftmost)
+ *   n = (-d.y, d.x)  // CCW-left when walking leftmost→rightmost
+ *   From the lake looking at the wall (leftmost on your left, rightmost on your
+ *   right): the lake is on the near side of the crest. In plan with the axis
+ *   drawn L→R, that near/lake side is −n (screen "below" for a typical E-W wall).
+ *   Crest US (lake / aguas arriba) edge:  P + n*(-W/2)
+ *   Crest DS (dry / aguas abajo) edge:    P + n*(+W/2)
+ *   US toe = further −n by |ΔZ|*(H/V)
+ *   DS toe = further +n by |ΔZ|*(H/V)
  */
 
 (() => {
@@ -63,12 +61,13 @@
 
   /**
    * Unit direction and left normal for axis leftmost→rightmost.
-   * n = (-d.y, d.x) is CCW-left when walking along d (= upstream / lake side).
+   * n = (-d.y, d.x) is CCW-left when walking along d.
+   * Lake/upstream (aguas arriba) is −n; dry/downstream (aguas abajo) is +n.
    */
   function axisFrame(leftmost, rightmost) {
     const d = normalize(rightmost.x - leftmost.x, rightmost.y - leftmost.y);
     if (!d) return null;
-    const n = { x: -d.y, y: d.x }; // left = upstream
+    const n = { x: -d.y, y: d.x }; // CCW-left; upstream = −n
     return { d, n, len: d.len };
   }
 
@@ -190,9 +189,9 @@
     const half = W / 2;
 
     // Crest borders — exact AutoCAD-style OFFSET of 2-pt segment
-    // From upstream (lake): left = +n, right/downstream = -n
-    const crestLeft = offsetSegment(leftmost, rightmost, n, +half);   // upstream crest edge
-    const crestRight = offsetSegment(leftmost, rightmost, n, -half);  // downstream crest edge
+    // From lake looking at wall: US (aguas arriba) = −n, DS (aguas abajo) = +n
+    const crestUS = offsetSegment(leftmost, rightmost, n, -half);  // lake-side crest edge
+    const crestDS = offsetSegment(leftmost, rightmost, n, +half);  // dry-side crest edge
 
     // Upstream toe
     const usH = Number(p.usH);
@@ -209,8 +208,8 @@
     }
     if (!isFinite(usZToe)) throw new Error("Upstream toe elevation invalid.");
     const usRun = planOffsetDistance(zCrest, usZToe, usSlope);
-    // Outward from crest left border = further +n
-    const usToe = offsetSegment(leftmost, rightmost, n, half + usRun);
+    // Outward from lake-side crest = further −n
+    const usToe = offsetSegment(leftmost, rightmost, n, -(half + usRun));
 
     // Downstream toe
     const dsH = Number(p.dsH);
@@ -227,28 +226,28 @@
     }
     if (!isFinite(dsZToe)) throw new Error("Downstream toe elevation invalid.");
     const dsRun = planOffsetDistance(zCrest, dsZToe, dsSlope);
-    // Outward from crest right = further -n
-    const dsToe = offsetSegment(leftmost, rightmost, n, -(half + dsRun));
+    // Outward from dry-side crest = further +n
+    const dsToe = offsetSegment(leftmost, rightmost, n, +(half + dsRun));
 
     const groups = [];
 
     groups.push(
       makeGroup("Crest", 4, [
-        makePoly("Crest upstream edge", zCrest, crestLeft, false),
-        makePoly("Crest downstream edge", zCrest, crestRight, false),
+        makePoly("Crest upstream edge (lake)", zCrest, crestUS, false),
+        makePoly("Crest downstream edge (dry)", zCrest, crestDS, false),
       ])
     );
 
     groups.push(
       makeGroup("Upstream", 0, [
-        makePoly("US crest edge (upstream)", zCrest, crestLeft, false),
+        makePoly("US crest edge (aguas arriba)", zCrest, crestUS, false),
         makePoly("US toe", usZToe, usToe, false),
       ])
     );
 
     groups.push(
       makeGroup("Downstream", 2, [
-        makePoly("DS crest edge (downstream)", zCrest, crestRight, false),
+        makePoly("DS crest edge (aguas abajo)", zCrest, crestDS, false),
         makePoly("DS toe", dsZToe, dsToe, false),
       ])
     );
@@ -266,14 +265,12 @@
         if (!isFinite(cZ)) throw new Error("Core base elevation invalid.");
         // Half-width at crest from vertical drop and core slope
         coreHalf = planOffsetDistance(zCrest, cZ, cH / cV);
-        const coreLeft = offsetSegment(leftmost, rightmost, n, +coreHalf);
-        const coreRight = offsetSegment(leftmost, rightmost, n, -coreHalf);
-        const coreBaseL = offsetSegment(leftmost, rightmost, n, 0); // axis at base as reference
-        // At base elev, core often pinches — MVP: store crest borders + axis as base centerline
+        const coreUS = offsetSegment(leftmost, rightmost, n, -coreHalf);
+        const coreDS = offsetSegment(leftmost, rightmost, n, +coreHalf);
         groups.push(
           makeGroup("Core", 1, [
-            makePoly("Core crest left", zCrest, coreLeft, false),
-            makePoly("Core crest right", zCrest, coreRight, false),
+            makePoly("Core crest US (lake)", zCrest, coreUS, false),
+            makePoly("Core crest DS (dry)", zCrest, coreDS, false),
             makePoly("Core axis (base ref)", cZ, [leftmost, rightmost], false),
           ])
         );
@@ -283,12 +280,12 @@
         if (!isFinite(Wc) || Wc <= 0) throw new Error("Core width must be > 0.");
         if (Wc >= W) throw new Error("Core width should be narrower than crest W.");
         coreHalf = Wc / 2;
-        const coreLeft = offsetSegment(leftmost, rightmost, n, +coreHalf);
-        const coreRight = offsetSegment(leftmost, rightmost, n, -coreHalf);
+        const coreUS = offsetSegment(leftmost, rightmost, n, -coreHalf);
+        const coreDS = offsetSegment(leftmost, rightmost, n, +coreHalf);
         groups.push(
           makeGroup("Core", 1, [
-            makePoly("Core crest left", zCrest, coreLeft, false),
-            makePoly("Core crest right", zCrest, coreRight, false),
+            makePoly("Core crest US (lake)", zCrest, coreUS, false),
+            makePoly("Core crest DS (dry)", zCrest, coreDS, false),
           ])
         );
         coreNote = ` Core width=${round6(Wc)}.`;
@@ -300,7 +297,7 @@
       `US run=${round6(usRun)} (Z ${zCrest}→${usZToe}, ${round6(usSlope)}:1) · ` +
       `DS run=${round6(dsRun)} (Z ${zCrest}→${dsZToe}, ${round6(dsSlope)}:1).` +
       coreNote +
-      ` US=left(+n, lake), DS=right(−n). Axis: leftmost→rightmost.`;
+      ` US=lake(−n), DS=dry(+n). Axis: leftmost→rightmost (from upstream).`;
 
     return {
       project: {
@@ -828,8 +825,8 @@
         html += `<circle cx="${b.x}" cy="${b.y}" r="3.5" fill="#8b9bb4"/>`;
         html += `<text x="${a.x + 6}" y="${a.y - 8}" fill="#8b9bb4" font-size="10" font-family="system-ui">Leftmost</text>`;
         html += `<text x="${b.x + 6}" y="${b.y - 8}" fill="#8b9bb4" font-size="10" font-family="system-ui">Rightmost</text>`;
-        html += `<text x="10" y="18" fill="#3b9eff" font-size="11" font-family="system-ui">US = left (+n, lake)</text>`;
-        html += `<text x="10" y="34" fill="#f0b429" font-size="11" font-family="system-ui">DS = right (−n)</text>`;
+        html += `<text x="10" y="18" fill="#3b9eff" font-size="11" font-family="system-ui">US = lake / aguas arriba (−n)</text>`;
+        html += `<text x="10" y="34" fill="#f0b429" font-size="11" font-family="system-ui">DS = dry / aguas abajo (+n)</text>`;
       }
     }
 
