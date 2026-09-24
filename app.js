@@ -47,7 +47,7 @@
   function sanitizeLayerName(name) {
     return String(name || "LAYER")
       .replace(/[<>\/\\":;?*|=`']/g, "_")
-      .replace(/\s+/g, "_")
+      .replace(/\s+/g, " ").trim()  // keep spaces for names like "outer shell"
       .slice(0, 255) || "LAYER";
   }
 
