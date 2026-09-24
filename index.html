@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reservoir Wall DXF — Civil 3D Helper</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <h1>Reservoir Wall DXF</h1>
+      <div class="project-meta">
+        <label class="field" style="min-width:180px;flex:0 1 220px">
+          Project name
+          <input type="text" id="projectName" value="Reservoir Wall Quick" />
+        </label>
+        <label class="field" style="min-width:120px;flex:0 1 160px">
+          Units note
+          <input type="text" id="projectUnits" value="meters (UTM)" />
+        </label>
+      </div>
+      <div class="actions">
+        <button class="btn" id="btnLoadSample" type="button">Load advanced sample</button>
+        <button class="btn" id="btnImportJson" type="button">Import JSON</button>
+        <button class="btn" id="btnExportJson" type="button">Export JSON</button>
+        <button class="btn btn-primary" id="btnExportDxf" type="button">Export DXF</button>
+        <input type="file" id="fileImport" accept=".json,application/json" hidden />
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="panel-title">
+        Groups (DXF layers)
+        <button class="btn btn-sm" id="btnAddGroup" type="button">+ Add</button>
+      </div>
+      <ul class="list" id="groupList"></ul>
+      <p class="hint" style="font-size:12px;color:var(--text-muted)">
+        Each group becomes a DXF layer. ↑↓ reorder. Polylines use one elevation each (DXF 38).
+      </p>
+    </aside>
+
+    <main class="main">
+      <div class="preview-wrap">
+        <div class="preview-toolbar">
+          <span class="panel-title" style="margin:0">Plan preview</span>
+          <label class="field inline" style="flex:0">
+            <input type="checkbox" id="showElevLabels" checked /> Elevation labels
+          </label>
+          <label class="field inline" style="flex:0">
+            <input type="checkbox" id="showAllGroups" checked /> All groups
+          </label>
+          <label class="field inline" style="flex:0">
+            <input type="checkbox" id="showAxis" checked /> Axis
+          </label>
+          <button class="btn btn-sm" id="btnFitView" type="button">Fit view</button>
+        </div>
+        <svg id="planPreview" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+
+      <section class="poly-editor" id="polyEditor">
+        <div class="panel-title">
+          Polylines in selected group
+          <button class="btn btn-sm" id="btnAddPoly" type="button">+ Add polyline</button>
+        </div>
+        <ul class="list" id="polyList"></ul>
+        <div id="polyDetail" class="empty">Select or add a polyline to edit vertices and elevation.</div>
+      </section>
+    </main>
+
+    <aside class="inspector">
+      <div class="mode-tabs" role="tablist">
+        <button type="button" class="mode-tab active" data-mode="quick" id="tabQuick">Quick Mode</button>
+        <button type="button" class="mode-tab" data-mode="advanced" id="tabAdvanced">Advanced</button>
+      </div>
+
+      <!-- ========== QUICK MODE ========== -->
+      <div id="panelQuick" class="mode-panel">
+        <div class="helper">
+          <h3>UTM axis → crest → slopes</h3>
+          <p class="hint">
+            Looking at the wall from upstream (standing in the middle of the lake): enter the
+            <strong>Leftmost</strong> and <strong>Rightmost</strong> crest-axis points (UTM).
+            Axis = leftmost → rightmost. Upstream = left (+n); Downstream = right (−n).
+            Crest borders = ±W/2 from the axis; toes = further outward by |ΔZ|×(H/V).
+          </p>
+
+          <div class="section-label">Axis (UTM) — leftmost → rightmost</div>
+          <div class="row">
+            <label class="field">
+              Leftmost Easting (X)
+              <input type="number" id="qmLeftE" step="any" value="350000" />
+            </label>
+            <label class="field">
+              Leftmost Northing (Y)
+              <input type="number" id="qmLeftN" step="any" value="6300000" />
+            </label>
+          </div>
+          <div class="row">
+            <label class="field">
+              Rightmost Easting (X)
+              <input type="number" id="qmRightE" step="any" value="350200" />
+            </label>
+            <label class="field">
+              Rightmost Northing (Y)
+              <input type="number" id="qmRightN" step="any" value="6300010" />
+            </label>
+          </div>
+
+          <div class="section-label">Crest</div>
+          <div class="row">
+            <label class="field">
+              Top width W (m)
+              <input type="number" id="qmWidth" step="any" min="0.001" value="4" />
+            </label>
+            <label class="field">
+              Crest elev Z<sub>crest</sub>
+              <input type="number" id="qmZCrest" step="any" value="120" />
+            </label>
+          </div>
+
+          <div class="section-label">Upstream (left / lake side, +n)</div>
+          <div class="row">
+            <label class="field">
+              H : V
+              <span style="display:flex;gap:6px;align-items:center">
+                <input type="number" id="qmUsH" step="any" value="2.5" style="flex:1" />
+                <span>:</span>
+                <input type="number" id="qmUsV" step="any" value="1" style="flex:1" />
+              </span>
+            </label>
+            <label class="field">
+              Toe elev Z<sub>toe</sub>
+              <input type="number" id="qmUsZToe" step="any" value="100" />
+            </label>
+          </div>
+          <label class="field inline">
+            <input type="checkbox" id="qmUsUseDz" />
+            Use ΔZ drop instead of absolute toe elev
+          </label>
+          <label class="field" id="qmUsDzWrap" style="display:none">
+            ΔZ drop (m)
+            <input type="number" id="qmUsDz" step="any" value="20" />
+          </label>
+
+          <div class="section-label">Downstream (right / dry side, −n)</div>
+          <div class="row">
+            <label class="field">
+              H : V
+              <span style="display:flex;gap:6px;align-items:center">
+                <input type="number" id="qmDsH" step="any" value="2" style="flex:1" />
+                <span>:</span>
+                <input type="number" id="qmDsV" step="any" value="1" style="flex:1" />
+              </span>
+            </label>
+            <label class="field">
+              Toe elev Z<sub>toe</sub>
+              <input type="number" id="qmDsZToe" step="any" value="100" />
+            </label>
+          </div>
+          <label class="field inline">
+            <input type="checkbox" id="qmDsUseDz" />
+            Use ΔZ drop instead of absolute toe elev
+          </label>
+          <label class="field" id="qmDsDzWrap" style="display:none">
+            ΔZ drop (m)
+            <input type="number" id="qmDsDz" step="any" value="20" />
+          </label>
+
+          <div class="section-label">Core distribution (optional)</div>
+          <label class="field inline">
+            <input type="checkbox" id="qmCoreEnable" />
+            Generate core borders about the same axis
+          </label>
+          <div id="qmCoreFields" style="display:none">
+            <label class="field">
+              Core mode
+              <select id="qmCoreMode">
+                <option value="width">Crest width (m)</option>
+                <option value="hv">H:V from crest elev to toe elev</option>
+              </select>
+            </label>
+            <div class="row" id="qmCoreWidthRow">
+              <label class="field">
+                Core crest width (m)
+                <input type="number" id="qmCoreWidth" step="any" min="0.001" value="1.5" />
+              </label>
+            </div>
+            <div class="row" id="qmCoreHvRow" style="display:none">
+              <label class="field">
+                Core H : V
+                <span style="display:flex;gap:6px;align-items:center">
+                  <input type="number" id="qmCoreH" step="any" value="0.3" style="flex:1" />
+                  <span>:</span>
+                  <input type="number" id="qmCoreV" step="any" value="1" style="flex:1" />
+                </span>
+              </label>
+              <label class="field">
+                Core base elev
+                <input type="number" id="qmCoreZBase" step="any" value="100" />
+              </label>
+            </div>
+            <p class="hint">
+              Width mode: core borders at ±Wc/2 from axis at Z<sub>crest</sub>.
+              H:V mode: half-width at crest = |Z<sub>crest</sub>−Z<sub>base</sub>|×(H/V).
+            </p>
+          </div>
+
+          <button class="btn btn-primary" id="btnQuickGenerate" type="button" style="margin-top:6px">
+            Generate wall from Quick Mode
+          </button>
+          <p class="hint" id="qmHint"></p>
+        </div>
+
+        <div class="divider"></div>
+        <div class="panel-title">Validation</div>
+        <div id="validationBoxQuick" class="empty">No issues.</div>
+      </div>
+
+      <!-- ========== ADVANCED ========== -->
+      <div id="panelAdvanced" class="mode-panel" hidden>
+        <div class="panel-title">Inclination helper</div>
+        <div class="helper">
+          <h3>Alignment + offset → vertices</h3>
+          <p class="hint">
+            Offset distance in plan = |Z − Z₀| × (H/V). Each baseline vertex is shifted
+            perpendicular to the local tangent by that distance.
+          </p>
+          <label class="field">
+            Baseline points (x,y per line)
+            <textarea id="baselinePts" rows="5" placeholder="0, 0&#10;50, 0&#10;100, 10"></textarea>
+          </label>
+          <div class="row">
+            <label class="field">
+              Ref elevation Z₀
+              <input type="number" id="refElev" step="any" value="100" />
+            </label>
+            <label class="field">
+              Target elevation Z
+              <input type="number" id="targetElev" step="any" value="110" />
+            </label>
+          </div>
+          <div class="row">
+            <label class="field">
+              Inclination mode
+              <select id="inclMode">
+                <option value="hv">H:V (e.g. 2:1)</option>
+                <option value="slope">Decimal slope (run/rise)</option>
+              </select>
+            </label>
+            <label class="field" id="hvFields">
+              H : V
+              <span style="display:flex;gap:6px;align-items:center">
+                <input type="number" id="inclH" step="any" value="2" style="flex:1" />
+                <span>:</span>
+                <input type="number" id="inclV" step="any" value="1" style="flex:1" />
+              </span>
+            </label>
+            <label class="field" id="slopeField" style="display:none">
+              Slope (run/rise)
+              <input type="number" id="inclSlope" step="any" value="2" />
+            </label>
+          </div>
+          <label class="field">
+            Offset side
+            <select id="offsetSide">
+              <option value="left">Left of baseline direction</option>
+              <option value="right">Right of baseline direction</option>
+            </select>
+          </label>
+          <div class="row">
+            <label class="field">
+              New polyline name
+              <input type="text" id="genPolyName" value="Offset line" />
+            </label>
+            <label class="field inline" style="flex:0;padding-bottom:6px">
+              <input type="checkbox" id="genClosed" /> Closed
+            </label>
+          </div>
+          <button class="btn btn-primary" id="btnGenerateOffset" type="button">
+            Generate into selected group
+          </button>
+          <p class="hint" id="offsetPreviewHint"></p>
+        </div>
+
+        <div class="divider"></div>
+        <div class="panel-title">Validation</div>
+        <div id="validationBox" class="empty">No issues.</div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
