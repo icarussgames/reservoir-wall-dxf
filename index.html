@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Reservoir Wall DXF — Civil 3D Helper</title>
+  <link rel="icon" href="data:," />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -21,6 +22,7 @@
         </label>
       </div>
       <div class="actions">
+        <button class="btn" id="btnNewProject" type="button">New default project</button>
         <button class="btn" id="btnLoadSample" type="button">Load advanced sample</button>
         <button class="btn" id="btnImportJson" type="button">Import JSON</button>
         <button class="btn" id="btnExportJson" type="button">Export JSON</button>
@@ -32,11 +34,13 @@
     <aside class="sidebar">
       <div class="panel-title">
         Shells (CAD layers = materials)
-        <button class="btn btn-sm" id="btnAddGroup" type="button">+ Add</button>
+        <button class="btn btn-sm" id="btnAddGroup" type="button" title="New shell, prefilled from the selected shell's Quick Mode values">+ Add shell</button>
       </div>
       <ul class="list" id="groupList"></ul>
       <p class="hint" style="font-size:12px;color:var(--text-muted)">
-        Each group becomes a DXF layer. ↑↓ reorder. Polylines use one elevation each (DXF 38).
+        Each shell is one DXF layer (e.g. <em>outer shell</em>, <em>core</em>, <em>filter</em>).
+        Select a shell to edit its own Quick Mode parameters. ↑↓ reorder.
+        Every polyline has a single elevation (DXF code 38).
       </p>
     </aside>
 
@@ -60,7 +64,7 @@
 
       <section class="poly-editor" id="polyEditor">
         <div class="panel-title">
-          Polylines in selected group
+          Polylines in selected shell
           <button class="btn btn-sm" id="btnAddPoly" type="button">+ Add polyline</button>
         </div>
         <ul class="list" id="polyList"></ul>
@@ -69,147 +73,147 @@
     </main>
 
     <aside class="inspector">
+      <!-- ========== SHARED AXIS (always visible) ========== -->
+      <div class="helper axis-panel">
+        <h3>Wall axis (shared by all shells)</h3>
+        <p class="hint">
+          Seen from upstream (standing in the middle of the lake): enter the
+          <strong>Leftmost</strong> and <strong>Rightmost</strong> axis points in UTM.
+          Axis = leftmost → rightmost. Upstream / aguas arriba (lake) = −n;
+          downstream / aguas abajo (dry) = +n.
+        </p>
+        <div class="row">
+          <label class="field">
+            Leftmost Easting (X)
+            <input type="number" id="axLeftE" step="any" value="350000" />
+          </label>
+          <label class="field">
+            Leftmost Northing (Y)
+            <input type="number" id="axLeftN" step="any" value="6300000" />
+          </label>
+        </div>
+        <div class="row">
+          <label class="field">
+            Rightmost Easting (X)
+            <input type="number" id="axRightE" step="any" value="350200" />
+          </label>
+          <label class="field">
+            Rightmost Northing (Y)
+            <input type="number" id="axRightN" step="any" value="6300010" />
+          </label>
+        </div>
+        <button class="btn btn-sm" id="btnRegenAll" type="button" title="Rebuild every shell from its own Quick Mode values (use after moving the axis)">
+          Regenerate all shells from axis
+        </button>
+        <p class="hint" id="axisHint"></p>
+      </div>
+
       <div class="mode-tabs" role="tablist">
-        <button type="button" class="mode-tab active" data-mode="quick" id="tabQuick">Quick Mode</button>
+        <button type="button" class="mode-tab active" data-mode="quick" id="tabQuick">Shell Quick Mode</button>
         <button type="button" class="mode-tab" data-mode="advanced" id="tabAdvanced">Advanced</button>
       </div>
 
-      <!-- ========== QUICK MODE ========== -->
+      <!-- ========== PER-SHELL QUICK MODE ========== -->
       <div id="panelQuick" class="mode-panel">
-        <div class="helper">
-          <h3>UTM axis → crest → slopes</h3>
+        <div id="qmNoShell" class="empty" hidden>Select or add a shell to edit its Quick Mode.</div>
+        <div class="helper" id="qmForm">
+          <h3>Quick Mode — <span id="qmShellName" class="shell-name">shell</span></h3>
           <p class="hint">
-            Looking at the wall from upstream (standing in the middle of the lake): enter the
-            <strong>Leftmost</strong> and <strong>Rightmost</strong> crest-axis points (UTM).
-            Axis = leftmost → rightmost (as seen from the lake). Upstream / aguas arriba = lake side (−n); Downstream / aguas abajo = dry side (+n).
-            Crest borders = ±W/2 from the axis; toes = further outward by |ΔZ|×(H/V).
+            Signed crest distances from the axis. US distance: + toward the lake (−n).
+            DS distance: + toward the dry side (+n). Either can be negative (edge on the other side of the axis).
+            Toes sit further out by |Z<sub>crest</sub> − Z<sub>toe</sub>| × (H/V).
           </p>
 
-          <div class="section-label">Axis (UTM) — leftmost → rightmost</div>
-          <div class="row">
-            <label class="field">
-              Leftmost Easting (X)
-              <input type="number" id="qmLeftE" step="any" value="350000" />
-            </label>
-            <label class="field">
-              Leftmost Northing (Y)
-              <input type="number" id="qmLeftN" step="any" value="6300000" />
-            </label>
-          </div>
-          <div class="row">
-            <label class="field">
-              Rightmost Easting (X)
-              <input type="number" id="qmRightE" step="any" value="350200" />
-            </label>
-            <label class="field">
-              Rightmost Northing (Y)
-              <input type="number" id="qmRightN" step="any" value="6300010" />
-            </label>
-          </div>
-
           <div class="section-label">Crest</div>
+          <label class="field">
+            <span>Crest elev Z<sub>crest</sub></span>
+            <input type="number" id="qmZCrest" step="any" value="523" />
+          </label>
           <div class="row">
             <label class="field">
-              Top width W (m)
-              <input type="number" id="qmWidth" step="any" min="0.001" value="4" />
+              <span>US crest distance d<sub>US</sub> (m, + = lake)</span>
+              <input type="number" id="qmDUs" step="any" value="3.5" />
             </label>
             <label class="field">
-              Crest elev Z<sub>crest</sub>
-              <input type="number" id="qmZCrest" step="any" value="120" />
+              <span>DS crest distance d<sub>DS</sub> (m, + = dry)</span>
+              <input type="number" id="qmDDs" step="any" value="3.5" />
             </label>
           </div>
-
-          <div class="section-label">Upstream / aguas arriba (lake side, −n)</div>
-          <div class="row">
+          <div class="row sym-row">
             <label class="field">
-              H : V
-              <span style="display:flex;gap:6px;align-items:center">
-                <input type="number" id="qmUsH" step="any" value="2.5" style="flex:1" />
-                <span>:</span>
-                <input type="number" id="qmUsV" step="any" value="1" style="flex:1" />
-              </span>
+              Width W (helper)
+              <input type="number" id="qmSymW" step="any" min="0" value="7" />
             </label>
-            <label class="field">
-              Toe elev Z<sub>toe</sub>
-              <input type="number" id="qmUsZToe" step="any" value="100" />
+            <button class="btn btn-sm" id="btnSymW" type="button" title="Sets d_US = d_DS = W/2">Symmetric from W</button>
+          </div>
+
+          <div class="section-label">
+            <label class="inline-check">
+              <input type="checkbox" id="qmIncUs" checked />
+              Upstream / aguas arriba (lake, −n)
             </label>
           </div>
-          <label class="field inline">
-            <input type="checkbox" id="qmUsUseDz" />
-            Use ΔZ drop instead of absolute toe elev
-          </label>
-          <label class="field" id="qmUsDzWrap" style="display:none">
-            ΔZ drop (m)
-            <input type="number" id="qmUsDz" step="any" value="20" />
-          </label>
-
-          <div class="section-label">Downstream / aguas abajo (dry side, +n)</div>
-          <div class="row">
-            <label class="field">
-              H : V
-              <span style="display:flex;gap:6px;align-items:center">
-                <input type="number" id="qmDsH" step="any" value="2" style="flex:1" />
-                <span>:</span>
-                <input type="number" id="qmDsV" step="any" value="1" style="flex:1" />
-              </span>
-            </label>
-            <label class="field">
-              Toe elev Z<sub>toe</sub>
-              <input type="number" id="qmDsZToe" step="any" value="100" />
-            </label>
-          </div>
-          <label class="field inline">
-            <input type="checkbox" id="qmDsUseDz" />
-            Use ΔZ drop instead of absolute toe elev
-          </label>
-          <label class="field" id="qmDsDzWrap" style="display:none">
-            ΔZ drop (m)
-            <input type="number" id="qmDsDz" step="any" value="20" />
-          </label>
-
-          <div class="section-label">Core distribution (optional)</div>
-          <label class="field inline">
-            <input type="checkbox" id="qmCoreEnable" />
-            Generate core as its own CAD layer (separate material shell)
-          </label>
-          <div id="qmCoreFields" style="display:none">
-            <label class="field">
-              Core mode
-              <select id="qmCoreMode">
-                <option value="width">Crest width (m)</option>
-                <option value="hv">H:V from crest elev to toe elev</option>
-              </select>
-            </label>
-            <div class="row" id="qmCoreWidthRow">
+          <div id="qmUsFields">
+            <div class="row">
               <label class="field">
-                Core crest width (m)
-                <input type="number" id="qmCoreWidth" step="any" min="0.001" value="1.5" />
-              </label>
-            </div>
-            <div class="row" id="qmCoreHvRow" style="display:none">
-              <label class="field">
-                Core H : V
+                H : V
                 <span style="display:flex;gap:6px;align-items:center">
-                  <input type="number" id="qmCoreH" step="any" value="0.3" style="flex:1" />
+                  <input type="number" id="qmUsH" step="any" value="2" style="flex:1" />
                   <span>:</span>
-                  <input type="number" id="qmCoreV" step="any" value="1" style="flex:1" />
+                  <input type="number" id="qmUsV" step="any" value="1" style="flex:1" />
                 </span>
               </label>
-              <label class="field">
-                Core base elev
-                <input type="number" id="qmCoreZBase" step="any" value="100" />
+              <label class="field" id="qmUsZToeWrap">
+                <span>Toe elev Z<sub>toe</sub></span>
+                <input type="number" id="qmUsZToe" step="any" value="423" />
+              </label>
+              <label class="field" id="qmUsDzWrap" style="display:none">
+                ΔZ drop (m)
+                <input type="number" id="qmUsDz" step="any" value="100" />
               </label>
             </div>
-            <p class="hint">
-              Width mode: core borders at ±Wc/2 from axis at Z<sub>crest</sub>.
-              H:V mode: half-width at crest = |Z<sub>crest</sub>−Z<sub>base</sub>|×(H/V).
-            </p>
+            <label class="field inline">
+              <input type="checkbox" id="qmUsUseDz" />
+              Use ΔZ drop instead of absolute toe elev
+            </label>
+          </div>
+
+          <div class="section-label">
+            <label class="inline-check">
+              <input type="checkbox" id="qmIncDs" checked />
+              Downstream / aguas abajo (dry, +n)
+            </label>
+          </div>
+          <div id="qmDsFields">
+            <div class="row">
+              <label class="field">
+                H : V
+                <span style="display:flex;gap:6px;align-items:center">
+                  <input type="number" id="qmDsH" step="any" value="1" style="flex:1" />
+                  <span>:</span>
+                  <input type="number" id="qmDsV" step="any" value="1" style="flex:1" />
+                </span>
+              </label>
+              <label class="field" id="qmDsZToeWrap">
+                <span>Toe elev Z<sub>toe</sub></span>
+                <input type="number" id="qmDsZToe" step="any" value="473" />
+              </label>
+              <label class="field" id="qmDsDzWrap" style="display:none">
+                ΔZ drop (m)
+                <input type="number" id="qmDsDz" step="any" value="50" />
+              </label>
+            </div>
+            <label class="field inline">
+              <input type="checkbox" id="qmDsUseDz" />
+              Use ΔZ drop instead of absolute toe elev
+            </label>
           </div>
 
           <button class="btn btn-primary" id="btnQuickGenerate" type="button" style="margin-top:6px">
-            Generate wall from Quick Mode
+            Generate this shell
           </button>
           <p class="hint" id="qmHint"></p>
+          <div id="qmWarn" class="qm-warn" hidden></div>
         </div>
 
         <div class="divider"></div>
@@ -278,7 +282,7 @@
             </label>
           </div>
           <button class="btn btn-primary" id="btnGenerateOffset" type="button">
-            Generate into selected group
+            Generate into selected shell
           </button>
           <p class="hint" id="offsetPreviewHint"></p>
         </div>

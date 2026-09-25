@@ -366,3 +366,39 @@ table.verts .act { width: 60px; }
 }
 
 sub { font-size: 0.75em; }
+
+/* Shared axis + per-shell Quick Mode */
+.axis-panel { border-color: var(--accent); }
+.shell-name { color: var(--accent); }
+.inline-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 12px;
+}
+.inline-check input { width: auto; accent-color: var(--accent); }
+.sym-row { align-items: flex-end; }
+.sym-row .btn { flex: 0 0 auto; min-width: 0; margin-bottom: 1px; }
+.fields-off { opacity: 0.4; pointer-events: none; }
+.qm-warn {
+  font-size: 12px;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: rgba(240, 180, 41, 0.08);
+}
+.qm-warn[hidden] { display: none; }
+.badge-quick {
+  font-size: 10px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+}
+
+[hidden] { display: none !important; }

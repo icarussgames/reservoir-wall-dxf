@@ -1,17 +1,25 @@
 /**
  * Reservoir Wall DXF — Civil 3D Helper
  *
- * Quick Mode axis geometry (exact for 2-point segment):
- *   Looking from upstream (middle of lake): leftmost / rightmost UTM points.
- *   Axis direction d = normalize(rightmost - leftmost)
- *   n = (-d.y, d.x)  // CCW-left when walking leftmost→rightmost
- *   From the lake looking at the wall (leftmost on your left, rightmost on your
- *   right): the lake is on the near side of the crest. In plan with the axis
- *   drawn L→R, that near/lake side is −n (screen "below" for a typical E-W wall).
- *   Crest US (lake / aguas arriba) edge:  P + n*(-W/2)
- *   Crest DS (dry / aguas abajo) edge:    P + n*(+W/2)
- *   US toe = further −n by |ΔZ|*(H/V)
- *   DS toe = further +n by |ΔZ|*(H/V)
+ * Model: Project → shared axis + Shells (groups = CAD layers = materials) → Polylines
+ *   project.axis = { leftmost:{x,y}, rightmost:{x,y} }   (UTM Easting/Northing)
+ *   group.quick  = per-shell Quick Mode parameters (see defaultQuick())
+ *   polyline     = 2D LWPOLYLINE with ONE elevation (DXF group code 38). Never 3D.
+ *
+ * Axis frame (seen from upstream, standing in the lake):
+ *   d = normalize(rightmost - leftmost)
+ *   n = (-d.y, d.x)          // CCW-left of d
+ *   Upstream / aguas arriba (lake) = −n
+ *   Downstream / aguas abajo (dry) = +n
+ *
+ * Per-shell geometry — every line is the axis offset by a signed distance s along n
+ * (exact parallel offset of a 2-point segment: both ends move by s·n):
+ *   US crest edge : s = −d_us                       Z = Z_crest
+ *   DS crest edge : s = +d_ds                       Z = Z_crest
+ *   US toe        : s = −(d_us + usRun)             Z = Z_toe_US
+ *   DS toe        : s = +(d_ds + dsRun)             Z = Z_toe_DS
+ *   usRun = |Z_crest − Z_toe_US| · (H/V)_US,  dsRun = |Z_crest − Z_toe_DS| · (H/V)_DS
+ *   d_us > 0 → toward the lake; d_ds > 0 → toward the dry side; negatives allowed.
  */
 
 (() => {
@@ -23,25 +31,51 @@
   ];
   const DXF_COLORS = [5, 3, 2, 1, 6, 4, 30, 150];
 
-  /** @type {{ name: string, units: string, groups: Group[], quickAxis?: {p0:{x:number,y:number}, p1:{x:number,y:number}} }} */
-  let project = emptyProject();
-  let selectedGroupId = null;
-  let selectedPolyId = null;
-  let view = { cx: 0, cy: 0, scale: 1 };
-  /** Preview-only axis from last Quick Mode generate (also stored on project.quickAxis). */
-  let previewAxis = null;
+  const DEFAULT_AXIS = {
+    leftmost: { x: 350000, y: 6300000 },
+    rightmost: { x: 350200, y: 6300010 },
+  };
 
   /**
-   * @typedef {{ id: string, name: string, color: string, dxfColor: number, polylines: Polyline[] }} Group
-   * @typedef {{ id: string, name: string, elevation: number, closed: boolean, vertices: {x:number,y:number}[] }} Polyline
+   * @typedef {{x:number,y:number}} Pt
+   * @typedef {{ leftmost: Pt, rightmost: Pt }} Axis
+   * @typedef {{ id: string, name: string, elevation: number, closed: boolean, vertices: Pt[], source?: string }} Polyline
+   * @typedef {{ zCrest:number, dUs:number, dDs:number, symW:number,
+   *   includeUs:boolean, usH:number, usV:number, usZToe:number, usUseDz:boolean, usDz:number,
+   *   includeDs:boolean, dsH:number, dsV:number, dsZToe:number, dsUseDz:boolean, dsDz:number }} QuickParams
+   * @typedef {{ id: string, name: string, color: string, dxfColor: number, polylines: Polyline[], quick?: QuickParams }} Group
    */
+
+  function defaultQuick() {
+    return {
+      zCrest: 523,
+      dUs: 3.5,
+      dDs: 3.5,
+      symW: 7,
+      includeUs: true,
+      usH: 2,
+      usV: 1,
+      usZToe: 423,
+      usUseDz: false,
+      usDz: 100,
+      includeDs: true,
+      dsH: 1,
+      dsV: 1,
+      dsZToe: 473,
+      dsUseDz: false,
+      dsDz: 50,
+    };
+  }
+
+  function cloneAxis(a) {
+    return {
+      leftmost: { x: Number(a.leftmost.x), y: Number(a.leftmost.y) },
+      rightmost: { x: Number(a.rightmost.x), y: Number(a.rightmost.y) },
+    };
+  }
 
   function uid(prefix) {
     return prefix + "_" + Math.random().toString(36).slice(2, 10);
-  }
-
-  function emptyProject() {
-    return { name: "Untitled", units: "meters", groups: [] };
   }
 
   function sanitizeLayerName(name) {
@@ -67,7 +101,7 @@
   function axisFrame(leftmost, rightmost) {
     const d = normalize(rightmost.x - leftmost.x, rightmost.y - leftmost.y);
     if (!d) return null;
-    const n = { x: -d.y, y: d.x }; // CCW-left; upstream = −n
+    const n = { x: -d.y, y: d.x };
     return { d, n, len: d.len };
   }
 
@@ -143,220 +177,195 @@
     return Math.round(x * 1e6) / 1e6;
   }
 
-  function makePoly(name, elevation, vertices, closed) {
-    return {
+  function makePoly(name, elevation, vertices, closed, source) {
+    const p = {
       id: uid("p"),
       name,
       elevation: Number(elevation),
       closed: !!closed,
       vertices: (vertices || []).map((v) => ({ x: v.x, y: v.y })),
     };
+    if (source) p.source = source;
+    return p;
   }
 
-  function makeGroup(name, colorIdx, polylines) {
+  function makeGroup(name, colorIdx, polylines, quick) {
     const i = colorIdx % GROUP_COLORS.length;
-    return {
+    const g = {
       id: uid("g"),
       name,
       color: GROUP_COLORS[i],
       dxfColor: DXF_COLORS[i],
       polylines: polylines || [],
     };
+    if (quick) g.quick = { ...defaultQuick(), ...quick };
+    return g;
   }
 
-  // ---------- Quick Mode generation ----------
+  // ---------- Per-shell Quick Mode geometry (pure, DOM-free) ----------
+
+  function num(v, label) {
+    const x = Number(v);
+    if (v === "" || v === null || v === undefined || !isFinite(x)) {
+      throw new Error(`${label} must be a number.`);
+    }
+    return x;
+  }
+
+  function slopeOf(H, V, label) {
+    const h = num(H, `${label} H`);
+    const v = num(V, `${label} V`);
+    if (v === 0) throw new Error(`${label} H:V invalid (V must be ≠ 0).`);
+    const s = h / v;
+    if (s < 0) throw new Error(`${label} H:V must be ≥ 0.`);
+    return s;
+  }
 
   /**
-   * Build project groups from Quick Mode parameters.
-   * @param {object} p
-   * @returns {{ project: object, hint: string, axis: {p0,p1} }}
+   * Build the Quick Mode polylines for ONE shell from the shared axis.
+   * @param {Axis} axis
+   * @param {QuickParams} q
+   * @returns {{ polylines: Polyline[], warnings: string[], hint: string, offsets: object }}
    */
-  function buildQuickModeProject(p) {
-    const leftmost = { x: Number(p.leftE), y: Number(p.leftN) };
-    const rightmost = { x: Number(p.rightE), y: Number(p.rightN) };
-    const W = Number(p.width);
-    const zCrest = Number(p.zCrest);
-
-    if (![leftmost.x, leftmost.y, rightmost.x, rightmost.y, W, zCrest].every(isFinite)) {
-      throw new Error("All axis / crest fields must be numeric.");
-    }
-    if (W <= 0) throw new Error("Crest width W must be > 0.");
-
-    const frame = axisFrame(leftmost, rightmost);
+  function buildShellPolylines(axis, q) {
+    if (!axis || !axis.leftmost || !axis.rightmost) throw new Error("Axis is not set.");
+    const L = { x: num(axis.leftmost.x, "Leftmost Easting"), y: num(axis.leftmost.y, "Leftmost Northing") };
+    const R = { x: num(axis.rightmost.x, "Rightmost Easting"), y: num(axis.rightmost.y, "Rightmost Northing") };
+    const frame = axisFrame(L, R);
     if (!frame) throw new Error("Leftmost and rightmost points must be distinct.");
-
     const { n } = frame;
-    const half = W / 2;
 
-    // Crest borders — exact AutoCAD-style OFFSET of 2-pt segment
-    // From lake looking at wall: US (aguas arriba) = −n, DS (aguas abajo) = +n
-    const crestUS = offsetSegment(leftmost, rightmost, n, -half);  // lake-side crest edge
-    const crestDS = offsetSegment(leftmost, rightmost, n, +half);  // dry-side crest edge
+    const includeUs = q.includeUs !== false;
+    const includeDs = q.includeDs !== false;
+    if (!includeUs && !includeDs) throw new Error("Include at least one side (upstream or downstream).");
 
-    // Upstream toe
-    const usH = Number(p.usH);
-    const usV = Number(p.usV);
-    if (!isFinite(usH) || !isFinite(usV) || usV === 0) {
-      throw new Error("Upstream H:V invalid (V ≠ 0).");
-    }
-    const usSlope = usH / usV;
-    let usZToe = Number(p.usZToe);
-    if (p.usUseDz) {
-      const dz = Number(p.usDz);
-      if (!isFinite(dz) || dz < 0) throw new Error("Upstream ΔZ must be ≥ 0.");
-      usZToe = zCrest - dz;
-    }
-    if (!isFinite(usZToe)) throw new Error("Upstream toe elevation invalid.");
-    const usRun = planOffsetDistance(zCrest, usZToe, usSlope);
-    // Outward from lake-side crest = further −n
-    const usToe = offsetSegment(leftmost, rightmost, n, -(half + usRun));
+    const zCrest = num(q.zCrest, "Crest elevation");
+    const polylines = [];
+    const warnings = [];
+    const offsets = {};
+    const hintParts = [`Axis ${round6(frame.len)} m`];
 
-    // Downstream toe
-    const dsH = Number(p.dsH);
-    const dsV = Number(p.dsV);
-    if (!isFinite(dsH) || !isFinite(dsV) || dsV === 0) {
-      throw new Error("Downstream H:V invalid (V ≠ 0).");
-    }
-    const dsSlope = dsH / dsV;
-    let dsZToe = Number(p.dsZToe);
-    if (p.dsUseDz) {
-      const dz = Number(p.dsDz);
-      if (!isFinite(dz) || dz < 0) throw new Error("Downstream ΔZ must be ≥ 0.");
-      dsZToe = zCrest - dz;
-    }
-    if (!isFinite(dsZToe)) throw new Error("Downstream toe elevation invalid.");
-    const dsRun = planOffsetDistance(zCrest, dsZToe, dsSlope);
-    // Outward from dry-side crest = further +n
-    const dsToe = offsetSegment(leftmost, rightmost, n, +(half + dsRun));
+    let dUs = null;
+    let dDs = null;
 
-    // CAD layers = material shells. Outer envelope lines share one layer.
-    const groups = [];
-    const outerPolys = [
-      makePoly("Crest US edge (lake)", zCrest, crestUS, false),
-      makePoly("Crest DS edge (dry)", zCrest, crestDS, false),
-      makePoly("US toe", usZToe, usToe, false),
-      makePoly("DS toe", dsZToe, dsToe, false),
-    ];
-    groups.push(makeGroup("outer shell", 0, outerPolys));
-
-    let coreNote = "";
-    if (p.coreEnable) {
-      let coreHalf;
-      if (p.coreMode === "hv") {
-        const cH = Number(p.coreH);
-        const cV = Number(p.coreV);
-        const cZ = Number(p.coreZBase);
-        if (!isFinite(cH) || !isFinite(cV) || cV === 0) {
-          throw new Error("Core H:V invalid.");
-        }
-        if (!isFinite(cZ)) throw new Error("Core base elevation invalid.");
-        coreHalf = planOffsetDistance(zCrest, cZ, cH / cV);
-        const coreUS = offsetSegment(leftmost, rightmost, n, -coreHalf);
-        const coreDS = offsetSegment(leftmost, rightmost, n, +coreHalf);
-        groups.push(
-          makeGroup("core", 1, [
-            makePoly("Core crest US (lake)", zCrest, coreUS, false),
-            makePoly("Core crest DS (dry)", zCrest, coreDS, false),
-            makePoly("Core axis (base ref)", cZ, [leftmost, rightmost], false),
-          ])
-        );
-        coreNote = ` Core half-width=${round6(coreHalf)} (H:V).`;
+    if (includeUs) {
+      dUs = num(q.dUs, "US crest distance");
+      const usSlope = slopeOf(q.usH, q.usV, "Upstream");
+      let usZToe;
+      if (q.usUseDz) {
+        const dz = num(q.usDz, "Upstream ΔZ");
+        if (dz < 0) throw new Error("Upstream ΔZ must be ≥ 0.");
+        usZToe = zCrest - dz;
       } else {
-        const Wc = Number(p.coreWidth);
-        if (!isFinite(Wc) || Wc <= 0) throw new Error("Core width must be > 0.");
-        if (Wc >= W) throw new Error("Core width should be narrower than crest W.");
-        coreHalf = Wc / 2;
-        const coreUS = offsetSegment(leftmost, rightmost, n, -coreHalf);
-        const coreDS = offsetSegment(leftmost, rightmost, n, +coreHalf);
-        groups.push(
-          makeGroup("core", 1, [
-            makePoly("Core crest US (lake)", zCrest, coreUS, false),
-            makePoly("Core crest DS (dry)", zCrest, coreDS, false),
-          ])
+        usZToe = num(q.usZToe, "Upstream toe elevation");
+      }
+      const usRun = planOffsetDistance(zCrest, usZToe, usSlope);
+      // Lake side is −n: crest edge at −d_us, toe further out at −(d_us + run)
+      const sCrest = -dUs;
+      const sToe = -(dUs + usRun);
+      polylines.push(makePoly("Crest US edge (lake)", zCrest, offsetSegment(L, R, n, sCrest), false, "quick"));
+      polylines.push(makePoly("US toe", usZToe, offsetSegment(L, R, n, sToe), false, "quick"));
+      offsets.usCrest = sCrest;
+      offsets.usToe = sToe;
+      if (usZToe > zCrest) warnings.push(`US toe (${usZToe}) is above the crest (${zCrest}).`);
+      hintParts.push(`US: edge ${round6(dUs)} m lake-side, run ${round6(usRun)} m (Z ${zCrest}→${usZToe}, ${round6(usSlope)}:1)`);
+    }
+
+    if (includeDs) {
+      dDs = num(q.dDs, "DS crest distance");
+      const dsSlope = slopeOf(q.dsH, q.dsV, "Downstream");
+      let dsZToe;
+      if (q.dsUseDz) {
+        const dz = num(q.dsDz, "Downstream ΔZ");
+        if (dz < 0) throw new Error("Downstream ΔZ must be ≥ 0.");
+        dsZToe = zCrest - dz;
+      } else {
+        dsZToe = num(q.dsZToe, "Downstream toe elevation");
+      }
+      const dsRun = planOffsetDistance(zCrest, dsZToe, dsSlope);
+      // Dry side is +n: crest edge at +d_ds, toe further out at +(d_ds + run)
+      const sCrest = +dDs;
+      const sToe = +(dDs + dsRun);
+      polylines.push(makePoly("Crest DS edge (dry)", zCrest, offsetSegment(L, R, n, sCrest), false, "quick"));
+      polylines.push(makePoly("DS toe", dsZToe, offsetSegment(L, R, n, sToe), false, "quick"));
+      offsets.dsCrest = sCrest;
+      offsets.dsToe = sToe;
+      if (dsZToe > zCrest) warnings.push(`DS toe (${dsZToe}) is above the crest (${zCrest}).`);
+      hintParts.push(`DS: edge ${round6(dDs)} m dry-side, run ${round6(dsRun)} m (Z ${zCrest}→${dsZToe}, ${round6(dsSlope)}:1)`);
+    }
+
+    if (includeUs && includeDs) {
+      const width = dUs + dDs; // = offsets.dsCrest − offsets.usCrest
+      hintParts.push(`crest width ${round6(width)} m`);
+      if (width < 0) {
+        warnings.push(
+          `Crest width is negative (${round6(width)} m): the US crest edge lies on the dry side of the DS crest edge.`
         );
-        coreNote = ` Core width=${round6(Wc)}.`;
       }
     }
 
-    const hint =
-      `Axis len=${round6(frame.len)} m · W/2=${round6(half)} · ` +
-      `US run=${round6(usRun)} (Z ${zCrest}→${usZToe}, ${round6(usSlope)}:1) · ` +
-      `DS run=${round6(dsRun)} (Z ${zCrest}→${dsZToe}, ${round6(dsSlope)}:1).` +
-      coreNote +
-      ` US=lake(−n), DS=dry(+n). Axis: leftmost→rightmost (from upstream).`;
-
-    return {
-      project: {
-        name: p.projectName || "Reservoir Wall Quick",
-        units: p.units || "meters (UTM)",
-        groups,
-        quickAxis: {
-          leftmost: { ...leftmost },
-          rightmost: { ...rightmost },
-          // legacy aliases for older JSON
-          p0: { ...leftmost },
-          p1: { ...rightmost },
-        },
-      },
-      hint,
-      axis: { leftmost, rightmost, p0: leftmost, p1: rightmost },
-    };
+    return { polylines, warnings, hint: hintParts.join(" · "), offsets };
   }
 
-  function readQuickModeParams() {
-    return {
-      leftE: $("#qmLeftE").value,
-      leftN: $("#qmLeftN").value,
-      rightE: $("#qmRightE").value,
-      rightN: $("#qmRightN").value,
-      width: $("#qmWidth").value,
-      zCrest: $("#qmZCrest").value,
-      usH: $("#qmUsH").value,
-      usV: $("#qmUsV").value,
-      usZToe: $("#qmUsZToe").value,
-      usUseDz: $("#qmUsUseDz").checked,
-      usDz: $("#qmUsDz").value,
-      dsH: $("#qmDsH").value,
-      dsV: $("#qmDsV").value,
-      dsZToe: $("#qmDsZToe").value,
-      dsUseDz: $("#qmDsUseDz").checked,
-      dsDz: $("#qmDsDz").value,
-      coreEnable: $("#qmCoreEnable").checked,
-      coreMode: $("#qmCoreMode").value,
-      coreWidth: $("#qmCoreWidth").value,
-      coreH: $("#qmCoreH").value,
-      coreV: $("#qmCoreV").value,
-      coreZBase: $("#qmCoreZBase").value,
-      projectName: $("#projectName").value,
-      units: $("#projectUnits").value,
-    };
+  /** Default project: shared axis + one "outer shell" generated from default params. */
+  function defaultProject() {
+    const axis = cloneAxis(DEFAULT_AXIS);
+    const g = makeGroup("outer shell", 0, [], defaultQuick());
+    g.polylines = buildShellPolylines(axis, g.quick).polylines;
+    return { name: "Reservoir Wall Quick", units: "meters (UTM)", axis, groups: [g] };
   }
 
-  function applyQuickMode(opts) {
-    const skipConfirm = opts && opts.skipConfirm;
-    const hasContent =
-      project.groups.length > 0 &&
-      project.groups.some((g) => g.polylines && g.polylines.length);
-    if (hasContent && !skipConfirm) {
-      if (!confirm("Replace current project polylines with Quick Mode result?")) {
-        return false;
+  /**
+   * Normalize an imported (possibly old-format) project so the app never crashes.
+   * - old `quickAxis` {leftmost,rightmost} or {p0,p1} → `axis`
+   * - missing ids / colors / polylines / vertices filled in
+   * - `quick` left undefined when absent (defaults are applied lazily on selection)
+   */
+  function normalizeProject(data) {
+    if (!data || typeof data !== "object" || !Array.isArray(data.groups)) {
+      throw new Error("Invalid project JSON (no groups array).");
+    }
+    const proj = {
+      name: data.name || "Imported project",
+      units: data.units || "meters",
+      axis: null,
+      groups: [],
+    };
+    const src = data.axis || data.quickAxis;
+    if (src) {
+      const a0 = src.leftmost || src.p0;
+      const a1 = src.rightmost || src.p1;
+      if (a0 && a1 && [a0.x, a0.y, a1.x, a1.y].every((v) => isFinite(Number(v)))) {
+        proj.axis = cloneAxis({ leftmost: a0, rightmost: a1 });
       }
     }
-    try {
-      const built = buildQuickModeProject(readQuickModeParams());
-      project = built.project;
-      previewAxis = built.axis;
-      selectedGroupId = project.groups[0]?.id || null;
-      selectedPolyId = project.groups[0]?.polylines?.[0]?.id || null;
-      $("#qmHint").textContent = built.hint;
-      renderAll();
-      fitView();
-      toast("Quick Mode wall generated.", "ok");
-      return true;
-    } catch (err) {
-      toast(err.message || String(err), "error");
-      return false;
-    }
+    data.groups.forEach((g, i) => {
+      if (!g || typeof g !== "object") return;
+      const out = {
+        id: g.id || uid("g"),
+        name: g.name || `shell ${i + 1}`,
+        color: g.color || GROUP_COLORS[i % GROUP_COLORS.length],
+        dxfColor: g.dxfColor || DXF_COLORS[i % DXF_COLORS.length],
+        polylines: [],
+      };
+      if (g.quick && typeof g.quick === "object") out.quick = { ...defaultQuick(), ...g.quick };
+      (Array.isArray(g.polylines) ? g.polylines : []).forEach((p, j) => {
+        if (!p || typeof p !== "object") return;
+        const pl = {
+          id: p.id || uid("p"),
+          name: p.name || `Polyline ${j + 1}`,
+          elevation: Number(p.elevation),
+          closed: !!p.closed,
+          vertices: (Array.isArray(p.vertices) ? p.vertices : [])
+            .filter((v) => v && typeof v === "object")
+            .map((v) => ({ x: Number(v.x), y: Number(v.y) })),
+        };
+        if (p.source) pl.source = p.source;
+        out.polylines.push(pl);
+      });
+      proj.groups.push(out);
+    });
+    return proj;
   }
 
   // ---------- Advanced sample ----------
@@ -375,6 +384,7 @@
     return {
       name: "Reservoir Wall A",
       units: "meters",
+      axis: null,
       groups: [
         makeGroup("Upstream shell", 0, [
           makePoly("US crest", 120, offset("left", 120, 2.5, 1)),
@@ -439,10 +449,10 @@
         if (!pl.vertices || pl.vertices.length < 2) continue;
         push(0, "LWPOLYLINE");
         push(8, layer);
-        push(38, Number(pl.elevation) || 0);
+        push(38, Number(pl.elevation) || 0);   // one elevation for the whole polyline
         push(90, pl.vertices.length);
         push(70, pl.closed ? 1 : 0);
-        for (const v of pl.vertices) {
+        for (const v of pl.vertices) {         // 2D vertices only — no group code 30
           push(10, round6(v.x));
           push(20, round6(v.y));
         }
@@ -462,13 +472,16 @@
     const groupNames = new Set();
     for (const g of proj.groups) {
       if (!g.name || !String(g.name).trim()) {
-        issues.push({ level: "error", msg: "A group has an empty name." });
+        issues.push({ level: "error", msg: "A shell has an empty name." });
       } else {
         const key = sanitizeLayerName(g.name).toLowerCase();
         if (groupNames.has(key)) {
           issues.push({ level: "warn", msg: `Duplicate layer name after sanitize: "${g.name}"` });
         }
         groupNames.add(key);
+      }
+      if (!g.polylines.length) {
+        issues.push({ level: "warn", msg: `Shell "${g.name}" has no polylines yet (Generate this shell).` });
       }
       for (const pl of g.polylines) {
         if (!pl.name || !String(pl.name).trim()) {
@@ -489,11 +502,48 @@
           }
         }
       }
+      if (g.quick && proj.axis) {
+        try {
+          const r = buildShellPolylines(proj.axis, g.quick);
+          r.warnings.forEach((w) => issues.push({ level: "warn", msg: `"${g.name}": ${w}` }));
+        } catch (_) { /* invalid params are reported in the Quick Mode panel */ }
+      }
     }
     return issues;
   }
 
-  // ---------- DOM ----------
+  const api = {
+    DEFAULT_AXIS,
+    defaultQuick,
+    defaultProject,
+    normalizeProject,
+    buildShellPolylines,
+    exportDxf,
+    sampleProject,
+    offsetPolylineFromBaseline,
+    offsetSegment,
+    axisFrame,
+    planOffsetDistance,
+    sanitizeLayerName,
+    validateProject,
+    makeGroup,
+  };
+
+  // Node / headless: expose pure functions, skip all DOM wiring.
+  if (typeof document === "undefined") {
+    if (typeof module !== "undefined" && module.exports) module.exports = api;
+    return;
+  }
+
+  // =====================================================================
+  // DOM / UI
+  // =====================================================================
+
+  let project = defaultProject();
+  let selectedGroupId = project.groups[0].id;
+  let selectedPolyId = null;
+  const view = { cx: 0, cy: 0, scale: 1 };
+
   const $ = (sel) => document.querySelector(sel);
 
   function toast(msg, kind) {
@@ -501,7 +551,7 @@
     el.textContent = msg;
     el.className = "toast show " + (kind || "ok");
     clearTimeout(toast._t);
-    toast._t = setTimeout(() => el.classList.remove("show"), 3200);
+    toast._t = setTimeout(() => el.classList.remove("show"), 3600);
   }
 
   function selectedGroup() {
@@ -514,6 +564,11 @@
     return g.polylines.find((p) => p.id === selectedPolyId) || null;
   }
 
+  function ensureQuick(g) {
+    if (!g.quick) g.quick = defaultQuick();
+    return g.quick;
+  }
+
   function setMode(mode) {
     const quick = mode === "quick";
     $("#tabQuick").classList.toggle("active", quick);
@@ -522,14 +577,200 @@
     $("#panelAdvanced").hidden = quick;
   }
 
+  // ---------- Shared axis panel ----------
+  const AXIS_FIELDS = [
+    ["axLeftE", "leftmost", "x"],
+    ["axLeftN", "leftmost", "y"],
+    ["axRightE", "rightmost", "x"],
+    ["axRightN", "rightmost", "y"],
+  ];
+
+  function readAxisFields() {
+    const a = { leftmost: {}, rightmost: {} };
+    for (const [id, pt, k] of AXIS_FIELDS) a[pt][k] = Number($("#" + id).value);
+    return a;
+  }
+
+  function writeAxisFields(axis) {
+    if (!axis) return; // keep whatever the fields show (defaults) until the user generates
+    for (const [id, pt, k] of AXIS_FIELDS) $("#" + id).value = axis[pt][k];
+  }
+
+  function onAxisInput() {
+    const a = readAxisFields();
+    const ok = [a.leftmost.x, a.leftmost.y, a.rightmost.x, a.rightmost.y].every(isFinite);
+    const frame = ok ? axisFrame(a.leftmost, a.rightmost) : null;
+    if (frame) {
+      project.axis = a;
+      $("#axisHint").textContent =
+        `Length ${round6(frame.len)} m. Moving the axis does not move existing lines — ` +
+        `press Generate on a shell (or Regenerate all).`;
+    } else {
+      $("#axisHint").textContent = "Enter two distinct numeric UTM points.";
+    }
+    updateQmLiveHint();
+    renderPreview();
+  }
+
+  // ---------- Per-shell Quick Mode panel ----------
+  // [elementId, key, kind]
+  const QM_FIELDS = [
+    ["qmZCrest", "zCrest", "num"],
+    ["qmDUs", "dUs", "num"],
+    ["qmDDs", "dDs", "num"],
+    ["qmSymW", "symW", "num"],
+    ["qmIncUs", "includeUs", "bool"],
+    ["qmUsH", "usH", "num"],
+    ["qmUsV", "usV", "num"],
+    ["qmUsZToe", "usZToe", "num"],
+    ["qmUsUseDz", "usUseDz", "bool"],
+    ["qmUsDz", "usDz", "num"],
+    ["qmIncDs", "includeDs", "bool"],
+    ["qmDsH", "dsH", "num"],
+    ["qmDsV", "dsV", "num"],
+    ["qmDsZToe", "dsZToe", "num"],
+    ["qmDsUseDz", "dsUseDz", "bool"],
+    ["qmDsDz", "dsDz", "num"],
+  ];
+
+  function renderQuickPanel() {
+    const g = selectedGroup();
+    $("#qmNoShell").hidden = !!g;
+    $("#qmForm").hidden = !g;
+    if (!g) return;
+    const q = ensureQuick(g);
+    $("#qmShellName").textContent = g.name;
+    for (const [id, key, kind] of QM_FIELDS) {
+      const el = $("#" + id);
+      if (kind === "bool") el.checked = !!q[key];
+      else el.value = q[key] === undefined || q[key] === null ? "" : q[key];
+    }
+    syncQmVisibility();
+    updateQmLiveHint();
+  }
+
+  function onQuickFieldInput(e) {
+    const g = selectedGroup();
+    if (!g) return;
+    const q = ensureQuick(g);
+    const def = QM_FIELDS.find(([id]) => id === e.target.id);
+    if (!def) return;
+    const [, key, kind] = def;
+    if (kind === "bool") q[key] = e.target.checked;
+    else q[key] = e.target.value === "" ? "" : Number(e.target.value);
+    syncQmVisibility();
+    updateQmLiveHint();
+  }
+
+  function syncQmVisibility() {
+    const usDz = $("#qmUsUseDz").checked;
+    const dsDz = $("#qmDsUseDz").checked;
+    $("#qmUsDzWrap").style.display = usDz ? "" : "none";
+    $("#qmUsZToeWrap").style.display = usDz ? "none" : "";
+    $("#qmDsDzWrap").style.display = dsDz ? "" : "none";
+    $("#qmDsZToeWrap").style.display = dsDz ? "none" : "";
+    $("#qmUsFields").classList.toggle("fields-off", !$("#qmIncUs").checked);
+    $("#qmDsFields").classList.toggle("fields-off", !$("#qmIncDs").checked);
+    $("#qmDUs").disabled = !$("#qmIncUs").checked;
+    $("#qmDDs").disabled = !$("#qmIncDs").checked;
+  }
+
+  function updateQmLiveHint() {
+    const g = selectedGroup();
+    const hintEl = $("#qmHint");
+    const warnEl = $("#qmWarn");
+    if (!g) { hintEl.textContent = ""; warnEl.hidden = true; return; }
+    try {
+      const r = buildShellPolylines(project.axis || readAxisFields(), ensureQuick(g));
+      hintEl.textContent = "Preview: " + r.hint;
+      if (r.warnings.length) {
+        warnEl.hidden = false;
+        warnEl.innerHTML = r.warnings.map((w) => "⚠ " + escapeHtml(w)).join("<br>");
+      } else {
+        warnEl.hidden = true;
+      }
+    } catch (err) {
+      hintEl.textContent = "";
+      warnEl.hidden = false;
+      warnEl.textContent = "⚠ " + (err.message || String(err));
+    }
+  }
+
+  function symmetricFromW() {
+    const g = selectedGroup();
+    if (!g) return;
+    const W = Number($("#qmSymW").value);
+    if (!isFinite(W) || W < 0) { toast("Enter a width W ≥ 0.", "error"); return; }
+    const q = ensureQuick(g);
+    q.symW = W;
+    q.dUs = W / 2;
+    q.dDs = W / 2;
+    renderQuickPanel();
+    toast(`d_US = d_DS = ${round6(W / 2)} m. Press "Generate this shell" to apply.`, "ok");
+  }
+
+  /** Regenerate one shell's polylines from the shared axis + its quick params. */
+  function generateShell(g, opts) {
+    const skipConfirm = opts && opts.skipConfirm;
+    const axis = readAxisFields();
+    const built = buildShellPolylines(axis, ensureQuick(g)); // throws on invalid input
+    if (!skipConfirm && g.polylines.length) {
+      const manual = g.polylines.filter((p) => p.source !== "quick").length;
+      const msg =
+        `Replace all ${g.polylines.length} polyline(s) in shell "${g.name}" with the Quick Mode result?` +
+        (manual ? `\n(${manual} of them were added or imported manually and will be removed too.)` : "") +
+        "\nOther shells are not touched.";
+      if (!confirm(msg)) return null;
+    }
+    project.axis = cloneAxis(axis);
+    g.polylines = built.polylines;
+    return built;
+  }
+
+  function onGenerateShell() {
+    const g = selectedGroup();
+    if (!g) { toast("Select or add a shell first.", "warn"); return; }
+    try {
+      const built = generateShell(g, { skipConfirm: false });
+      if (!built) return;
+      selectedPolyId = null;
+      renderAll();
+      fitView();
+      if (built.warnings.length) toast(`Shell "${g.name}" generated with warnings: ${built.warnings[0]}`, "warn");
+      else toast(`Shell "${g.name}" generated (${built.polylines.length} polylines).`, "ok");
+    } catch (err) {
+      toast(err.message || String(err), "error");
+    }
+  }
+
+  function onRegenerateAll() {
+    const shells = project.groups;
+    if (!shells.length) { toast("No shells to regenerate.", "warn"); return; }
+    if (!confirm(
+      `Regenerate all ${shells.length} shell(s) from the axis and each shell's Quick Mode values?\n` +
+      "This replaces every shell's polylines (manual edits included)."
+    )) return;
+    const failed = [];
+    for (const g of shells) {
+      try { generateShell(g, { skipConfirm: true }); }
+      catch (err) { failed.push(`${g.name}: ${err.message}`); }
+    }
+    selectedPolyId = null;
+    renderAll();
+    fitView();
+    if (failed.length) toast("Some shells failed — " + failed.join("; "), "error");
+    else toast(`Regenerated ${shells.length} shell(s).`, "ok");
+  }
+
   // ---------- Render ----------
   function renderAll() {
     $("#projectName").value = project.name;
     $("#projectUnits").value = project.units || "meters";
-    if (project.quickAxis) previewAxis = project.quickAxis;
+    writeAxisFields(project.axis);
     renderGroups();
     renderPolys();
     renderPolyDetail();
+    renderQuickPanel();
     renderPreview();
     renderValidation();
   }
@@ -538,7 +779,7 @@
     const ul = $("#groupList");
     ul.innerHTML = "";
     if (!project.groups.length) {
-      ul.innerHTML = '<li class="empty">No shells yet. Use Quick Mode or Add.</li>';
+      ul.innerHTML = '<li class="empty">No shells yet. Click “+ Add shell”.</li>';
       return;
     }
     project.groups.forEach((g, idx) => {
@@ -567,7 +808,7 @@
         }
         if (act === "del") {
           e.stopPropagation();
-          if (confirm(`Delete group "${g.name}" and all its polylines?`)) {
+          if (confirm(`Delete shell "${g.name}" and all its polylines?`)) {
             project.groups = project.groups.filter((x) => x.id !== g.id);
             if (selectedGroupId === g.id) {
               selectedGroupId = project.groups[0]?.id || null;
@@ -578,7 +819,8 @@
           return;
         }
         selectedGroupId = g.id;
-        selectedPolyId = g.polylines[0]?.id || null;
+        selectedPolyId = null;
+        setMode("quick");
         renderAll();
       });
       ul.appendChild(li);
@@ -599,18 +841,18 @@
     const g = selectedGroup();
     ul.innerHTML = "";
     if (!g) {
-      ul.innerHTML = '<li class="empty">Select a group.</li>';
+      ul.innerHTML = '<li class="empty">Select a shell.</li>';
       return;
     }
     if (!g.polylines.length) {
-      ul.innerHTML = '<li class="empty">No polylines. Add one or use Quick Mode.</li>';
+      ul.innerHTML = '<li class="empty">No polylines. Press “Generate this shell”, or add one manually.</li>';
       return;
     }
     g.polylines.forEach((pl) => {
       const li = document.createElement("li");
       li.className = "list-item" + (pl.id === selectedPolyId ? " active" : "");
       li.innerHTML = `
-        <span class="name">${escapeHtml(pl.name)}</span>
+        <span class="name">${escapeHtml(pl.name)}${pl.source === "quick" ? '<span class="badge-quick">quick</span>' : ""}</span>
         <span class="meta">Z=${pl.elevation} · ${pl.vertices.length} pts${pl.closed ? " · closed" : ""}</span>
         <span class="item-actions">
           <button class="btn btn-sm btn-ghost btn-danger" data-act="del">✕</button>
@@ -621,13 +863,16 @@
           e.stopPropagation();
           if (confirm(`Delete polyline "${pl.name}"?`)) {
             g.polylines = g.polylines.filter((x) => x.id !== pl.id);
-            if (selectedPolyId === pl.id) selectedPolyId = g.polylines[0]?.id || null;
+            if (selectedPolyId === pl.id) selectedPolyId = null;
             renderAll();
           }
           return;
         }
         selectedPolyId = pl.id;
-        renderAll();
+        renderGroups();
+        renderPolys();
+        renderPolyDetail();
+        renderPreview();
       });
       ul.appendChild(li);
     });
@@ -747,17 +992,16 @@
   function boundsOf(items) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     const consider = (x, y) => {
+      if (!isFinite(x) || !isFinite(y)) return;
       minX = Math.min(minX, x); minY = Math.min(minY, y);
       maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
     };
     for (const { poly } of items) {
       for (const v of poly.vertices) consider(v.x, v.y);
     }
-    if (previewAxis) {
-      const a0 = previewAxis.leftmost || previewAxis.p0;
-      const a1 = previewAxis.rightmost || previewAxis.p1;
-      if (a0) consider(a0.x, a0.y);
-      if (a1) consider(a1.x, a1.y);
+    if (project.axis) {
+      consider(project.axis.leftmost.x, project.axis.leftmost.y);
+      consider(project.axis.rightmost.x, project.axis.rightmost.y);
     }
     if (!isFinite(minX)) return { minX: -10, minY: -10, maxX: 10, maxY: 10 };
     if (minX === maxX) { minX -= 1; maxX += 1; }
@@ -794,25 +1038,22 @@
     const h = rect.height || 400;
     svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
     const showLabels = $("#showElevLabels").checked;
-    const showAxis = $("#showAxis") ? $("#showAxis").checked : true;
+    const showAxis = $("#showAxis").checked;
     const items = allVisiblePolys();
+    const font = 'font-family="system-ui"';
 
     let html = `<rect x="0" y="0" width="${w}" height="${h}" fill="#0a0e14"/>`;
 
-    // Axis (dashed) under polylines — leftmost → rightmost
-    if (showAxis && previewAxis) {
-      const ax0 = previewAxis.leftmost || previewAxis.p0;
-      const ax1 = previewAxis.rightmost || previewAxis.p1;
-      if (ax0 && ax1) {
-        const a = worldToSvg(ax0.x, ax0.y, w, h);
-        const b = worldToSvg(ax1.x, ax1.y, w, h);
+    // Shared axis (dashed) under the polylines — leftmost → rightmost
+    if (showAxis && project.axis) {
+      const a = worldToSvg(project.axis.leftmost.x, project.axis.leftmost.y, w, h);
+      const b = worldToSvg(project.axis.rightmost.x, project.axis.rightmost.y, w, h);
+      if ([a.x, a.y, b.x, b.y].every(isFinite)) {
         html += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#8b9bb4" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.9"/>`;
         html += `<circle cx="${a.x}" cy="${a.y}" r="3.5" fill="#8b9bb4"/>`;
         html += `<circle cx="${b.x}" cy="${b.y}" r="3.5" fill="#8b9bb4"/>`;
-        html += `<text x="${a.x + 6}" y="${a.y - 8}" fill="#8b9bb4" font-size="10" font-family="system-ui">Leftmost</text>`;
-        html += `<text x="${b.x + 6}" y="${b.y - 8}" fill="#8b9bb4" font-size="10" font-family="system-ui">Rightmost</text>`;
-        html += `<text x="10" y="18" fill="#3b9eff" font-size="11" font-family="system-ui">US = lake / aguas arriba (−n)</text>`;
-        html += `<text x="10" y="34" fill="#f0b429" font-size="11" font-family="system-ui">DS = dry / aguas abajo (+n)</text>`;
+        html += `<text x="${a.x + 6}" y="${a.y - 8}" fill="#8b9bb4" font-size="10" ${font}>Leftmost</text>`;
+        html += `<text x="${b.x + 6}" y="${b.y - 8}" fill="#8b9bb4" font-size="10" ${font}>Rightmost</text>`;
       }
     }
 
@@ -822,35 +1063,55 @@
       let d = pts.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
       if (poly.closed && pts.length > 2) d += " Z";
       const isSel = poly.id === selectedPolyId;
-      html += `<path d="${d}" fill="none" stroke="${group.color}" stroke-width="${isSel ? 2.5 : 1.5}" opacity="${isSel ? 1 : 0.8}"/>`;
+      const inSelShell = group.id === selectedGroupId;
+      html += `<path d="${d}" fill="none" stroke="${group.color}" stroke-width="${isSel ? 3 : inSelShell ? 2 : 1.3}" opacity="${isSel || inSelShell ? 1 : 0.6}"/>`;
       for (const p of pts) {
         html += `<circle cx="${p.x}" cy="${p.y}" r="${isSel ? 3.5 : 2}" fill="${group.color}"/>`;
       }
       if (showLabels && pts.length) {
         const mid = pts[Math.floor(pts.length / 2)];
-        html += `<text x="${mid.x + 6}" y="${mid.y - 6}" fill="${group.color}" font-size="11" font-family="system-ui">${escapeHtml(String(poly.elevation))}</text>`;
+        html += `<text x="${mid.x + 6}" y="${mid.y - 6}" fill="${group.color}" font-size="11" ${font}>${escapeHtml(String(poly.elevation))}</text>`;
       }
     }
+
+    // Legends: side convention (top-left) + shell colors (bottom-left)
+    html += `<text x="10" y="18" fill="#c8d3e3" font-size="11" ${font}>US = lake / aguas arriba (−n)</text>`;
+    html += `<text x="10" y="34" fill="#c8d3e3" font-size="11" ${font}>DS = dry / aguas abajo (+n)</text>`;
+    project.groups.forEach((g, i) => {
+      const y = h - 12 - (project.groups.length - 1 - i) * 16;
+      html += `<rect x="10" y="${y - 9}" width="10" height="10" rx="2" fill="${g.color}"/>`;
+      html += `<text x="26" y="${y}" fill="#c8d3e3" font-size="11" ${font}>${escapeHtml(g.name)}</text>`;
+    });
 
     svg.innerHTML = html;
   }
 
   // ---------- Actions ----------
-  function addGroup() {
-    const n = prompt("New shell / CAD layer name:", "filter");
+  function addShell() {
+    const n = prompt("New shell / CAD layer name:", project.groups.length ? "core" : "outer shell");
     if (n == null || !n.trim()) return;
-    const g = makeGroup(n.trim(), project.groups.length, []);
+    const src = selectedGroup();
+    const quick = src ? { ...ensureQuick(src) } : defaultQuick();
+    const g = makeGroup(n.trim(), project.groups.length, [], quick);
     project.groups.push(g);
     selectedGroupId = g.id;
     selectedPolyId = null;
+    setMode("quick");
     renderAll();
+    toast(
+      src
+        ? `Shell "${g.name}" created with "${src.name}"'s Quick Mode values. Adjust them, then Generate this shell.`
+        : `Shell "${g.name}" created. Set its values, then Generate this shell.`,
+      "ok"
+    );
   }
 
   function addPolyline() {
     const g = selectedGroup();
-    if (!g) { toast("Select or create a group first.", "warn"); return; }
+    if (!g) { toast("Select or create a shell first.", "warn"); return; }
+    const base = project.axis ? project.axis.leftmost : { x: 0, y: 0 };
     const pl = makePoly("Polyline " + (g.polylines.length + 1), 0, [
-      { x: 0, y: 0 }, { x: 10, y: 0 },
+      { x: base.x, y: base.y }, { x: base.x + 10, y: base.y },
     ]);
     g.polylines.push(pl);
     selectedPolyId = pl.id;
@@ -859,7 +1120,7 @@
 
   function generateOffset() {
     const g = selectedGroup();
-    if (!g) { toast("Select a group first.", "warn"); return; }
+    if (!g) { toast("Select a shell first.", "warn"); return; }
     const baseline = parseBaselineText($("#baselinePts").value);
     if (baseline.length < 2) {
       toast("Need at least 2 baseline points (x,y per line).", "error");
@@ -913,46 +1174,42 @@
       return;
     }
     const warns = issues.filter((i) => i.level === "warn");
-    if (warns.length) toast(`${warns.length} warning(s) — exporting anyway.`, "warn");
     downloadText(
       sanitizeLayerName(project.name || "project") + ".dxf",
       exportDxf(project),
       "application/dxf"
     );
-    toast("DXF downloaded.", "ok");
+    if (warns.length) toast(`DXF downloaded with ${warns.length} warning(s) — see Validation.`, "warn");
+    else toast("DXF downloaded.", "ok");
   }
 
   function doExportJson() {
+    // project already holds axis + per-shell quick params
     downloadText(
       sanitizeLayerName(project.name || "project") + ".json",
       JSON.stringify(project, null, 2),
       "application/json"
     );
-    toast("JSON exported.", "ok");
+    toast("JSON exported (axis + shells + Quick Mode values).", "ok");
   }
 
   function doImportJson(file) {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const data = JSON.parse(reader.result);
-        if (!data || !Array.isArray(data.groups)) throw new Error("Invalid project JSON");
-        project = data;
-        project.groups.forEach((g, i) => {
-          if (!g.id) g.id = uid("g");
-          if (!g.color) g.color = GROUP_COLORS[i % GROUP_COLORS.length];
-          if (!g.dxfColor) g.dxfColor = DXF_COLORS[i % DXF_COLORS.length];
-          (g.polylines || []).forEach((p) => {
-            if (!p.id) p.id = uid("p");
-            if (!Array.isArray(p.vertices)) p.vertices = [];
-          });
-        });
-        previewAxis = project.quickAxis || null;
+        project = normalizeProject(JSON.parse(reader.result));
         selectedGroupId = project.groups[0]?.id || null;
-        selectedPolyId = project.groups[0]?.polylines?.[0]?.id || null;
+        selectedPolyId = null;
+        setMode("quick");
         renderAll();
         fitView();
-        toast("Project imported.", "ok");
+        const noQuick = project.groups.filter((g) => !g.quick).length;
+        toast(
+          "Project imported." +
+            (noQuick ? ` ${noQuick} shell(s) had no Quick Mode values — defaults shown; existing lines kept until you Generate.` : "") +
+            (project.axis ? "" : " No axis in file — axis fields kept as they were."),
+          "ok"
+        );
       } catch (err) {
         toast("Import failed: " + err.message, "error");
       }
@@ -960,15 +1217,26 @@
     reader.readAsText(file);
   }
 
-  function loadSample() {
-    project = sampleProject();
-    previewAxis = null;
+  function newDefaultProject() {
+    if (project.groups.some((g) => g.polylines.length) &&
+        !confirm("Replace the current project with the default one (axis + outer shell)?")) return;
+    project = defaultProject();
     selectedGroupId = project.groups[0].id;
-    selectedPolyId = project.groups[0].polylines[0].id;
+    selectedPolyId = null;
+    setMode("quick");
+    renderAll();
+    fitView();
+    toast("Default project loaded.", "ok");
+  }
+
+  function loadSample() {
+    if (project.groups.some((g) => g.polylines.length) &&
+        !confirm("Replace the current project with the advanced (non-axis) sample?")) return;
+    project = sampleProject();
+    selectedGroupId = project.groups[0].id;
+    selectedPolyId = null;
     $("#baselinePts").value = "0, 0\n40, 2\n80, 0\n120, -3\n160, 0";
     $("#refElev").value = "100";
-    $("#projectName").value = project.name;
-    $("#projectUnits").value = project.units;
     setMode("advanced");
     renderAll();
     fitView();
@@ -986,39 +1254,20 @@
     return escapeHtml(s).replace(/'/g, "&#39;");
   }
 
-  function syncQmDzUi() {
-    $("#qmUsDzWrap").style.display = $("#qmUsUseDz").checked ? "" : "none";
-    $("#qmDsDzWrap").style.display = $("#qmDsUseDz").checked ? "" : "none";
-  }
-
-  function syncQmCoreUi() {
-    const on = $("#qmCoreEnable").checked;
-    $("#qmCoreFields").style.display = on ? "" : "none";
-    const hv = $("#qmCoreMode").value === "hv";
-    $("#qmCoreWidthRow").style.display = hv ? "none" : "";
-    $("#qmCoreHvRow").style.display = hv ? "" : "none";
-  }
-
-  function updateQmLiveHint() {
-    try {
-      const built = buildQuickModeProject(readQuickModeParams());
-      $("#qmHint").textContent = "Preview: " + built.hint;
-    } catch (err) {
-      $("#qmHint").textContent = err.message || "";
-    }
-  }
-
   // ---------- Wire UI ----------
   function bind() {
     $("#tabQuick").addEventListener("click", () => setMode("quick"));
     $("#tabAdvanced").addEventListener("click", () => setMode("advanced"));
 
-    $("#btnAddGroup").addEventListener("click", addGroup);
+    $("#btnAddGroup").addEventListener("click", addShell);
     $("#btnAddPoly").addEventListener("click", addPolyline);
     $("#btnGenerateOffset").addEventListener("click", generateOffset);
-    $("#btnQuickGenerate").addEventListener("click", () => applyQuickMode({ skipConfirm: false }));
+    $("#btnQuickGenerate").addEventListener("click", onGenerateShell);
+    $("#btnSymW").addEventListener("click", symmetricFromW);
+    $("#btnRegenAll").addEventListener("click", onRegenerateAll);
     $("#btnExportDxf").addEventListener("click", doExportDxf);
     $("#btnExportJson").addEventListener("click", doExportJson);
+    $("#btnNewProject").addEventListener("click", newDefaultProject);
     $("#btnLoadSample").addEventListener("click", loadSample);
     $("#btnFitView").addEventListener("click", fitView);
     $("#showElevLabels").addEventListener("change", renderPreview);
@@ -1037,34 +1286,19 @@
     $("#projectUnits").addEventListener("change", (e) => {
       project.units = e.target.value;
     });
+
+    for (const [id] of AXIS_FIELDS) {
+      $("#" + id).addEventListener("input", onAxisInput);
+    }
+    for (const [id, , kind] of QM_FIELDS) {
+      $("#" + id).addEventListener(kind === "bool" ? "change" : "input", onQuickFieldInput);
+    }
+
     $("#inclMode").addEventListener("change", () => {
       const hv = $("#inclMode").value === "hv";
       $("#hvFields").style.display = hv ? "" : "none";
       $("#slopeField").style.display = hv ? "none" : "";
     });
-
-    $("#qmUsUseDz").addEventListener("change", syncQmDzUi);
-    $("#qmDsUseDz").addEventListener("change", syncQmDzUi);
-    $("#qmCoreEnable").addEventListener("change", syncQmCoreUi);
-    $("#qmCoreMode").addEventListener("change", syncQmCoreUi);
-
-    const qmIds = [
-      "qmLeftE", "qmLeftN", "qmRightE", "qmRightN", "qmWidth", "qmZCrest",
-      "qmUsH", "qmUsV", "qmUsZToe", "qmUsDz",
-      "qmDsH", "qmDsV", "qmDsZToe", "qmDsDz",
-      "qmCoreWidth", "qmCoreH", "qmCoreV", "qmCoreZBase",
-    ];
-    qmIds.forEach((id) => {
-      const el = $("#" + id);
-      if (el) {
-        el.addEventListener("input", updateQmLiveHint);
-        el.addEventListener("change", updateQmLiveHint);
-      }
-    });
-    ["qmUsUseDz", "qmDsUseDz", "qmCoreEnable", "qmCoreMode"].forEach((id) => {
-      $("#" + id).addEventListener("change", updateQmLiveHint);
-    });
-
     const updateHint = () => {
       const z0 = Number($("#refElev").value);
       const z = Number($("#targetElev").value);
@@ -1089,33 +1323,21 @@
   }
 
   window.ReservoirWallApp = {
-    exportDxf,
-    sampleProject,
-    buildQuickModeProject,
-    offsetPolylineFromBaseline,
-    offsetSegment,
-    axisFrame,
-    planOffsetDistance,
-    sanitizeLayerName,
-    validateProject,
+    ...api,
     getProject: () => project,
     setProject: (p) => {
-      project = p;
-      previewAxis = p.quickAxis || null;
-      selectedGroupId = p.groups[0]?.id || null;
-      selectedPolyId = p.groups[0]?.polylines?.[0]?.id || null;
+      project = normalizeProject(p);
+      selectedGroupId = project.groups[0]?.id || null;
+      selectedPolyId = null;
       renderAll();
+      fitView();
     },
   };
 
   // ---------- Init ----------
   bind();
-  syncQmDzUi();
-  syncQmCoreUi();
   setMode("quick");
-  // Enable core in presets for a richer default demo, then generate
-  $("#qmCoreEnable").checked = true;
-  syncQmCoreUi();
-  applyQuickMode({ skipConfirm: true });
-  updateQmLiveHint();
+  renderAll();
+  fitView();
+  onAxisInput();
 })();
