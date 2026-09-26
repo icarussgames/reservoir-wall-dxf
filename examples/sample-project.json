@@ -1,0 +1,204 @@
+{
+  "name": "Sample reservoir wall",
+  "units": "meters (UTM)",
+  "axis": {
+    "leftmost": {
+      "x": 350000,
+      "y": 6300000
+    },
+    "rightmost": {
+      "x": 350200,
+      "y": 6300010
+    }
+  },
+  "groups": [
+    {
+      "id": "g_outer",
+      "name": "outer shell",
+      "color": "#3b9eff",
+      "dxfColor": 5,
+      "polylines": [
+        {
+          "id": "p_outer_1",
+          "name": "Crest US edge (lake)",
+          "elevation": 523,
+          "closed": false,
+          "vertices": [
+            {
+              "x": 350000.1747816593,
+              "y": 6299996.504366814
+            },
+            {
+              "x": 350200.1747816593,
+              "y": 6300006.504366814
+            }
+          ],
+          "source": "quick"
+        },
+        {
+          "id": "p_outer_2",
+          "name": "US toe",
+          "elevation": 423,
+          "closed": false,
+          "vertices": [
+            {
+              "x": 350010.1623050481,
+              "y": 6299796.753899039
+            },
+            {
+              "x": 350210.1623050481,
+              "y": 6299806.753899039
+            }
+          ],
+          "source": "quick"
+        },
+        {
+          "id": "p_outer_3",
+          "name": "Crest DS edge (dry)",
+          "elevation": 523,
+          "closed": false,
+          "vertices": [
+            {
+              "x": 349999.8252183407,
+              "y": 6300003.495633186
+            },
+            {
+              "x": 350199.8252183407,
+              "y": 6300013.495633186
+            }
+          ],
+          "source": "quick"
+        },
+        {
+          "id": "p_outer_4",
+          "name": "DS toe",
+          "elevation": 473,
+          "closed": false,
+          "vertices": [
+            {
+              "x": 349997.3283374935,
+              "y": 6300053.43325013
+            },
+            {
+              "x": 350197.3283374935,
+              "y": 6300063.43325013
+            }
+          ],
+          "source": "quick"
+        }
+      ],
+      "quick": {
+        "zCrest": 523,
+        "dUs": 3.5,
+        "dDs": 3.5,
+        "symW": 7,
+        "includeUs": true,
+        "usH": 2,
+        "usV": 1,
+        "usZToe": 423,
+        "usUseDz": false,
+        "usDz": 100,
+        "includeDs": true,
+        "dsH": 1,
+        "dsV": 1,
+        "dsZToe": 473,
+        "dsUseDz": false,
+        "dsDz": 50
+      }
+    },
+    {
+      "id": "g_core",
+      "name": "core",
+      "color": "#3ecf8e",
+      "dxfColor": 3,
+      "polylines": [
+        {
+          "id": "p_core_1",
+          "name": "Crest US edge (lake)",
+          "elevation": 523,
+          "closed": false,
+          "vertices": [
+            {
+              "x": 350000.0998752339,
+              "y": 6299998.002495322
+            },
+            {
+              "x": 350200.0998752339,
+              "y": 6300008.002495322
+            }
+          ],
+          "source": "quick"
+        },
+        {
+          "id": "p_core_2",
+          "name": "US toe",
+          "elevation": 423,
+          "closed": false,
+          "vertices": [
+            {
+              "x": 350001.5980037422,
+              "y": 6299968.039925156
+            },
+            {
+              "x": 350201.5980037422,
+              "y": 6299978.039925156
+            }
+          ],
+          "source": "quick"
+        },
+        {
+          "id": "p_core_3",
+          "name": "Crest DS edge (dry)",
+          "elevation": 523,
+          "closed": false,
+          "vertices": [
+            {
+              "x": 350000.0499376169,
+              "y": 6299999.001247661
+            },
+            {
+              "x": 350200.0499376169,
+              "y": 6300009.001247661
+            }
+          ],
+          "source": "quick"
+        },
+        {
+          "id": "p_core_4",
+          "name": "DS toe",
+          "elevation": 473,
+          "closed": false,
+          "vertices": [
+            {
+              "x": 349999.3008733628,
+              "y": 6300013.982532744
+            },
+            {
+              "x": 350199.3008733628,
+              "y": 6300023.982532744
+            }
+          ],
+          "source": "quick"
+        }
+      ],
+      "quick": {
+        "zCrest": 523,
+        "dUs": 2,
+        "dDs": -1,
+        "symW": 7,
+        "includeUs": true,
+        "usH": 0.3,
+        "usV": 1,
+        "usZToe": 423,
+        "usUseDz": false,
+        "usDz": 100,
+        "includeDs": true,
+        "dsH": 0.3,
+        "dsV": 1,
+        "dsZToe": 473,
+        "dsUseDz": false,
+        "dsDz": 50
+      }
+    }
+  ]
+}
